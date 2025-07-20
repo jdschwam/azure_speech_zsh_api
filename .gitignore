@@ -1,0 +1,42 @@
+# Azure Speech API Script - .gitignore
+
+# Configuration files with sensitive data
+.azure_speech_config
+
+# Output directories (generated files)
+output/
+samples_audio/
+samples_text/
+
+# macOS system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*_converted*.wav
+*_converted_from_*.wav
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*.backup
+
+# Test files (unless specifically needed)
+test_*.wav
+temp_*.wav

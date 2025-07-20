@@ -1,0 +1,1 @@
+Welcome to the Azure Speech API demonstration. This text file can be used as input for text-to-speech conversion. The enhanced script now supports reading text from files, making it easier to convert longer passages or pre-written content to speech. Simply run the TTS command without arguments and choose option 2 to read from a file like this one.
