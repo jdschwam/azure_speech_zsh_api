@@ -795,19 +795,14 @@ speech_to_text() {
     fi
 }
 
-# Add new function for TTS with Avatar using Batch Avatar API
+# Add new function for TTS with Avatar using WebRTC API
 text_to_speech_avatar() {
     local text=""
-    local voice="en-US-AvaMultilingualNeural"
+    local voice="en-US-JennyNeural"
     local avatar="lisa"
-    local avatar_style="graceful-sitting"
     local output_file="avatar_$(date '+%Y%m%d_%H%M%S').mp4"
     local rate="+0%"
     local pitch="+0%"
-    local video_format="mp4"
-    local video_codec="h264"
-    local subtitle_type="soft_embedded"
-    local background_color="#FFFFFFFF"
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -922,169 +917,83 @@ text_to_speech_avatar() {
         log "INFO" "Selected avatar: $avatar"
     fi
     
-    # Check avatar configuration first
-    if ! load_avatar_config; then
+    # Check avatar configuration
+    if [[ -z "$AZURE_AVATAR_KEY" || -z "$AZURE_AVATAR_REGION" ]]; then
         log "ERROR" "Avatar configuration not found"
-        log "INFO" "Run: $0 avatar-config"
-        log "INFO" "You need a separate Azure Speech resource with avatar capabilities"
+        log "INFO" "Run './azure_speech_v1.sh avatar-config' to set up avatar credentials"
         return 1
     fi
     
-    # Create output directories
-    mkdir -p "$TTS_DIR"
-    local full_output_path="$TTS_DIR/$output_file"
+    # Check if Python avatar script exists
+    local script_dir="$(dirname "${BASH_SOURCE[0]}")"
+    local avatar_script="$script_dir/avatar_webrtc.py"
     
-    log "INFO" "Converting text to avatar video using Batch Avatar API..."
+    if [[ ! -f "$avatar_script" ]]; then
+        log "ERROR" "Avatar WebRTC script not found: $avatar_script"
+        log "INFO" "Please create the avatar_webrtc.py file"
+        return 1
+    fi
+    
+    # Check if virtual environment exists
+    local venv_dir="$script_dir/avatar_env"
+    if [[ ! -d "$venv_dir" ]]; then
+        log "ERROR" "Avatar virtual environment not found"
+        log "INFO" "Run '$script_dir/install_avatar_deps.sh' to install dependencies"
+        return 1
+    fi
+    
+    # Check Python dependencies
+    local python_exec="$venv_dir/bin/python"
+    if ! "$python_exec" -c "import aiortc, aiohttp, cv2, websockets" 2>/dev/null; then
+        log "ERROR" "Missing Python dependencies"
+        log "INFO" "Run '$script_dir/install_avatar_deps.sh' to install dependencies"
+        return 1
+    fi
+    
+    log "INFO" "Starting avatar synthesis with WebRTC..."
     log "INFO" "Text: $text"
     log "INFO" "Voice: $voice"
-    log "INFO" "Avatar: $avatar ($avatar_style)"
-    log "INFO" "Avatar Region: $AZURE_AVATAR_REGION"
-    log "INFO" "Output: $full_output_path"
+    log "INFO" "Avatar: $avatar"
+    log "INFO" "Region: $AZURE_AVATAR_REGION"
     
-    # Generate unique job ID
-    local job_id="batchavatar-$(date +%s)-$$"
+    # Create output directory
+    mkdir -p "$TTS_DIR"
     
-    # Batch Avatar API endpoint using avatar credentials
-    local avatar_api_url="https://${AZURE_AVATAR_REGION}.tts.speech.microsoft.com/avatar/batchsyntheses/${job_id}?api-version=2024-08-01"
+    # Call Python avatar script with virtual environment
+    "$python_exec" "$avatar_script" \
+        --text "$text" \
+        --voice "$voice" \
+        --avatar "$avatar" \
+        --config "$CONFIG_FILE"
     
-    # Create SSML with prosody controls
-    local ssml="<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='http://www.w3.org/2001/mstts' xml:lang='en-US'>
-        <voice name='$voice'>
-            <prosody rate='$rate' pitch='$pitch'>
-                $text
-            </prosody>
-        </voice>
-    </speak>"
+    local exit_code=$?
     
-    # Create batch avatar request payload
-    local request_payload=$(cat <<EOF
-{
-    "inputKind": "Ssml",
-    "inputs": [
-        {
-            "content": "$ssml"
-        }
-    ],
-    "synthesisConfig": {
-        "voice": "$voice"
-    },
-    "avatarConfig": {
-        "talkingAvatarCharacter": "$avatar",
-        "talkingAvatarStyle": "$avatar_style",
-        "videoFormat": "$video_format",
-        "videoCodec": "$video_codec",
-        "subtitleType": "$subtitle_type",
-        "backgroundColor": "$background_color",
-        "customized": false
-    }
-}
-EOF
-    )
-    
-    log "INFO" "Submitting batch avatar job: $job_id"
-    
-    # Submit batch avatar job
-    local submit_response=$(curl -s -w "\n%{http_code}" -X PUT \
-        -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
-        -H "Content-Type: application/json" \
-        --data "$request_payload" \
-        "$avatar_api_url")
-    
-    local submit_body=$(echo "$submit_response" | sed '$d')
-    local submit_http_code=$(echo "$submit_response" | tail -1)
-    
-    if [[ "$submit_http_code" != "201" ]]; then
-        log "ERROR" "Failed to submit batch avatar job. HTTP code: $submit_http_code"
-        log "ERROR" "Response: $submit_body"
+    if [[ $exit_code -eq 0 ]]; then
+        log "INFO" "Avatar synthesis completed successfully!"
+        
+        # Find and show the generated video file
+        local latest_video=$(ls -t "$TTS_DIR"/avatar_*.mp4 2>/dev/null | head -n1)
+        if [[ -n "$latest_video" ]]; then
+            log "INFO" "Avatar video saved to: $latest_video"
+            
+            # Offer to play the video (if on macOS)
+            if command -v open &> /dev/null && [[ -t 0 ]]; then
+                echo -n "Open the avatar video? (y/n): "
+                read play_video
+                if [[ "$play_video" =~ ^[Yy]$ ]]; then
+                    open "$latest_video"
+                fi
+            fi
+        else
+            log "WARN" "Avatar video file not found in expected location"
+        fi
+        
+        return 0
+    else
+        log "ERROR" "Avatar synthesis failed (exit code: $exit_code)"
         return 1
     fi
-    
-    log "INFO" "Batch avatar job submitted successfully. Polling for completion..."
-    
-    # Poll for job completion
-    local max_attempts=60  # 5 minutes with 5-second intervals
-    local attempt=0
-    local job_status=""
-    
-    while [[ $attempt -lt $max_attempts ]]; do
-        sleep 5
-        attempt=$((attempt + 1))
-        
-        # Get job status
-        local status_response=$(curl -s -w "\n%{http_code}" \
-            -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
-            "$avatar_api_url")
-        
-        local status_body=$(echo "$status_response" | sed '$d')
-        local status_http_code=$(echo "$status_response" | tail -1)
-        
-        if [[ "$status_http_code" == "200" ]]; then
-            job_status=$(echo "$status_body" | jq -r '.status // "Unknown"')
-            
-            case "$job_status" in
-                "Succeeded")
-                    log "INFO" "Batch avatar job completed successfully!"
-                    
-                    # Get download URL
-                    local download_url=$(echo "$status_body" | jq -r '.outputs.result // empty')
-                    
-                    if [[ -n "$download_url" && "$download_url" != "null" ]]; then
-                        log "INFO" "Downloading avatar video..."
-                        
-                        # Download the video file
-                        local download_response=$(curl -s -w "\n%{http_code}" -o "$full_output_path" "$download_url")
-                        local download_http_code=$(echo "$download_response" | tail -1)
-                        
-                        if [[ "$download_http_code" == "200" ]]; then
-                            # Check if file was actually downloaded and has content
-                            if [[ -f "$full_output_path" && -s "$full_output_path" ]]; then
-                                log "INFO" "✅ Avatar video successfully saved to: $full_output_path"
-                                
-                                # Get file size for confirmation
-                                local file_size=$(ls -lh "$full_output_path" | awk '{print $5}')
-                                log "INFO" "Video file size: $file_size"
-                                
-                                # Cleanup job (optional)
-                                curl -s -X DELETE \
-                                    -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
-                                    "$avatar_api_url" > /dev/null
-                                
-                                return 0
-                            else
-                                log "ERROR" "Downloaded file is empty or missing"
-                                rm -f "$full_output_path"
-                                return 1
-                            fi
-                        else
-                            log "ERROR" "Failed to download video file. HTTP code: $download_http_code"
-                            return 1
-                        fi
-                    else
-                        log "ERROR" "No download URL found in job results"
-                        return 1
-                    fi
-                    ;;
-                "Failed")
-                    log "ERROR" "Batch avatar job failed"
-                    log "ERROR" "Job details: $status_body"
-                    return 1
-                    ;;
-                "Running"|"Queued")
-                    log "INFO" "Job status: $job_status (attempt $attempt/$max_attempts)"
-                    ;;
-                *)
-                    log "INFO" "Job status: $job_status (attempt $attempt/$max_attempts)"
-                    ;;
-            esac
-        else
-            log "ERROR" "Failed to get job status. HTTP code: $status_http_code"
-            return 1
-        fi
-    done
-    
-    log "ERROR" "Timeout waiting for batch avatar job completion after $max_attempts attempts"
-    log "INFO" "You can check job status manually with job ID: $job_id"
-    return 1
+}
 }
 
 # List available voices
@@ -1168,7 +1077,7 @@ show_debug() {
     echo ""
     echo -e "${BLUE}Test Connectivity:${NC}"
     
-    # Test token endpoint
+    # Test standard token endpoint
     local token_url="https://${AZURE_REGION}.api.cognitive.microsoft.com/sts/v1.0/issuetoken"
     local token_test=$(curl -s -w "%{http_code}" -X POST \
         -H "Ocp-Apim-Subscription-Key: $AZURE_SPEECH_KEY" \
@@ -1177,18 +1086,58 @@ show_debug() {
     
     local token_http_code="${token_test: -3}"
     if [[ "$token_http_code" == "200" ]]; then
-        echo -e "${GREEN}✅ Token endpoint: Accessible${NC}"
+        echo -e "${GREEN}✅ Standard Token endpoint: Accessible${NC}"
     else
-        echo -e "${RED}❌ Token endpoint: HTTP $token_http_code${NC}"
+        echo -e "${RED}❌ Standard Token endpoint: HTTP $token_http_code${NC}"
+    fi
+    
+    # Test avatar connectivity if avatar config exists
+    if load_avatar_config; then
+        local avatar_token_url="https://${AZURE_AVATAR_REGION}.api.cognitive.microsoft.com/sts/v1.0/issuetoken"
+        local avatar_token_test=$(curl -s -w "%{http_code}" -X POST \
+            -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+            -H "Content-Length: 0" \
+            "$avatar_token_url")
+        
+        local avatar_token_http_code="${avatar_token_test: -3}"
+        if [[ "$avatar_token_http_code" == "200" ]]; then
+            echo -e "${GREEN}✅ Avatar Token endpoint: Accessible${NC}"
+        else
+            echo -e "${RED}❌ Avatar Token endpoint: HTTP $avatar_token_http_code${NC}"
+        fi
+        
+        # Test real-time avatar API availability
+        local avatar_api_url="https://${AZURE_AVATAR_REGION}.tts.speech.microsoft.com/cognitiveservices/avatar/relay/token/v1"
+        local avatar_api_test=$(curl -s -w "%{http_code}" \
+            -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+            "$avatar_api_url")
+        
+        local avatar_api_http_code="${avatar_api_test: -3}"
+        if [[ "$avatar_api_http_code" == "200" ]]; then
+            echo -e "${GREEN}✅ Real-time Avatar API: Available${NC}"
+        else
+            echo -e "${RED}❌ Real-time Avatar API: HTTP $avatar_api_http_code${NC}"
+            if [[ "$avatar_api_http_code" == "404" ]]; then
+                echo -e "${YELLOW}   Note: Avatar features may not be available in this region or subscription${NC}"
+            elif [[ "$avatar_api_http_code" == "401" ]]; then
+                echo -e "${YELLOW}   Note: Check avatar API key and region${NC}"
+            fi
+        fi
     fi
     
     # Test TTS endpoint
     local tts_url="https://${AZURE_REGION}.tts.speech.microsoft.com/cognitiveservices/v1"
-    echo "TTS endpoint: $tts_url"
+    echo "Standard TTS endpoint: $tts_url"
     
     # Test STT endpoint  
     local stt_url="https://${AZURE_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
-    echo "STT endpoint: $stt_url"
+    echo "Standard STT endpoint: $stt_url"
+    
+    # Show avatar endpoints if configured
+    if load_avatar_config; then
+        local avatar_api_url="https://${AZURE_AVATAR_REGION}.tts.speech.microsoft.com/cognitiveservices/avatar/relay/token/v1"
+        echo "Real-time Avatar API endpoint: $avatar_api_url"
+    fi
     
     # Check output directories
     echo ""
