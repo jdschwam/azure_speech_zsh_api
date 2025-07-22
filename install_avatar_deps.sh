@@ -10,14 +10,14 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 # Create virtual environment if it doesn't exist
-if [[ ! -d "avatar_env" ]]; then
+if [[ ! -d ".venv" ]]; then
     echo "🐍 Creating Python virtual environment..."
-    python3 -m venv avatar_env
+    python3 -m venv .venv
 fi
 
 # Activate virtual environment
 echo "⚡ Activating virtual environment..."
-source avatar_env/bin/activate
+source .venv/bin/activate
 
 # Install required packages
 echo "📥 Installing packages..."

@@ -935,7 +935,7 @@ text_to_speech_avatar() {
     fi
     
     # Check if virtual environment exists
-    local venv_dir="$script_dir/avatar_env"
+    local venv_dir="$script_dir/.venv"
     if [[ ! -d "$venv_dir" ]]; then
         log "ERROR" "Avatar virtual environment not found"
         log "INFO" "Run '$script_dir/install_avatar_deps.sh' to install dependencies"
