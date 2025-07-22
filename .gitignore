@@ -40,3 +40,4 @@ Thumbs.db
 # Test files (unless specifically needed)
 test_*.wav
 temp_*.wav
+.venv/

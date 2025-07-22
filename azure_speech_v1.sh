@@ -26,6 +26,8 @@ NC='\033[0m' # No Color
 # Configuration
 AZURE_REGION=""
 AZURE_SPEECH_KEY=""
+AZURE_AVATAR_REGION=""
+AZURE_AVATAR_KEY=""
 CONFIG_FILE="$HOME/.azure_speech_config"
 
 # Default values
@@ -43,8 +45,10 @@ show_help() {
     echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  config                Set up Azure credentials"
+    echo "  config               Set up Azure credentials for standard TTS/STT"
+    echo "  avatar-config        Set up Azure credentials for avatar functionality"
     echo "  tts [text]           Text-to-speech conversion (prompts for text/file if none given)"
+    echo "  ttsa [text]          Text-to-speech with avatar video (prompts for text/file if none given)"
     echo "  stt [audio_file]     Speech-to-text conversion (prompts if no file given)"
     echo "  voices               List available voices"
     echo "  debug                Show debug information"
@@ -54,6 +58,14 @@ show_help() {
     echo "  -t, --text TEXT      Text to convert to speech"
     echo "  -v, --voice VOICE    Voice to use (default: $DEFAULT_VOICE)"
     echo "  -o, --output FILE    Output audio file (default: speech.wav)"
+    echo "  -r, --rate RATE      Speech rate (-50% to +200%, default: +0%)"
+    echo "  -p, --pitch PITCH    Speech pitch (-50% to +50%, default: +0%)"
+    echo ""
+    echo "Avatar Text-to-Speech Options:"
+    echo "  -t, --text TEXT      Text to convert to avatar speech"
+    echo "  -v, --voice VOICE    Voice to use (default: $DEFAULT_VOICE)"
+    echo "  -a, --avatar AVATAR  Avatar to use (prompts for selection if not specified)"
+    echo "  -o, --output FILE    Output video file (default: avatar_[timestamp].mp4)"
     echo "  -r, --rate RATE      Speech rate (-50% to +200%, default: +0%)"
     echo "  -p, --pitch PITCH    Speech pitch (-50% to +50%, default: +0%)"
     echo ""
@@ -71,6 +83,9 @@ show_help() {
     echo "  $0 tts -t \"Hello, world!\" -v \"en-US-AriaNeural\" -o hello.wav"
     echo "  $0 tts \"Quick text without options\""
     echo "  $0 tts  # Will prompt to type text or select a text file"
+    echo "  $0 ttsa -t \"Hello from avatar!\" -a \"lisa\" -v \"en-US-JennyNeural\""
+    echo "  $0 ttsa \"Quick avatar test\"  # Will prompt for avatar selection"
+    echo "  $0 ttsa  # Will prompt to type text or select a text file, then avatar"
     echo "  $0 stt -f audio.wav -l en-US"
     echo "  $0 stt  # Will prompt for audio file"
     echo "  $0 voices"
@@ -79,6 +94,27 @@ show_help() {
     echo "  TTS outputs:    $TTS_DIR/"
     echo "  STT outputs:    $STT_DIR/"
     echo "  Debug files:    $DEBUG_DIR/"
+}
+
+# Add avatar selection function
+select_avatar() {
+    echo "Available Avatars:" >&2
+    echo "1. Lisa (Professional female)" >&2
+    echo "2. Aria (Casual female)" >&2
+    echo "3. Davis (Professional male)" >&2
+    echo "4. Grace (Friendly female)" >&2
+    echo "5. Custom (if you have custom avatar)" >&2
+    
+    echo -n "Select avatar (1-5): " >&2
+    read choice
+    case $choice in
+        1) echo "lisa" ;;
+        2) echo "aria" ;;
+        3) echo "davis" ;;
+        4) echo "grace" ;;
+        5) echo -n "Enter custom avatar ID: " >&2; read custom; echo "$custom" ;;
+        *) echo "lisa" ;;  # Default
+    esac
 }
 
 # Logging function
@@ -144,15 +180,63 @@ load_config() {
     return 1
 }
 
+# Load avatar configuration
+load_avatar_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        if [[ -n "$AZURE_AVATAR_REGION" && -n "$AZURE_AVATAR_KEY" ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Save configuration
 save_config() {
+    # Preserve existing avatar config if present
+    local existing_avatar_region=""
+    local existing_avatar_key=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        existing_avatar_region="$AZURE_AVATAR_REGION"
+        existing_avatar_key="$AZURE_AVATAR_KEY"
+    fi
+    
     cat > "$CONFIG_FILE" << EOF
 # Azure Speech API Configuration
 AZURE_REGION="$AZURE_REGION"
 AZURE_SPEECH_KEY="$AZURE_SPEECH_KEY"
+
+# Azure Avatar Speech API Configuration (optional)
+AZURE_AVATAR_REGION="$existing_avatar_region"
+AZURE_AVATAR_KEY="$existing_avatar_key"
 EOF
     chmod 600 "$CONFIG_FILE"
     log "INFO" "Configuration saved to $CONFIG_FILE"
+}
+
+# Save avatar configuration
+save_avatar_config() {
+    # Load existing standard config
+    local existing_region=""
+    local existing_key=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        existing_region="$AZURE_REGION"
+        existing_key="$AZURE_SPEECH_KEY"
+    fi
+    
+    cat > "$CONFIG_FILE" << EOF
+# Azure Speech API Configuration
+AZURE_REGION="$existing_region"
+AZURE_SPEECH_KEY="$existing_key"
+
+# Azure Avatar Speech API Configuration (optional)
+AZURE_AVATAR_REGION="$AZURE_AVATAR_REGION"
+AZURE_AVATAR_KEY="$AZURE_AVATAR_KEY"
+EOF
+    chmod 600 "$CONFIG_FILE"
+    log "INFO" "Avatar configuration saved to $CONFIG_FILE"
 }
 
 # Setup configuration
@@ -191,6 +275,82 @@ setup_config() {
     else
         log "ERROR" "Configuration test failed. HTTP code: $http_code"
         log "ERROR" "Please check your region and API key"
+        exit 1
+    fi
+}
+
+# Setup avatar configuration
+setup_avatar_config() {
+    echo -e "${BLUE}Azure Avatar Speech API Configuration${NC}"
+    echo ""
+    echo "Configure a separate Azure Speech resource for avatar functionality."
+    echo "This should be a Speech resource that supports TTS Avatar features."
+    echo ""
+    echo "Recommended regions for avatar features:"
+    echo "  • eastus (East US)"
+    echo "  • westeurope (West Europe)"
+    echo "  • southeastasia (Southeast Asia)"
+    echo ""
+    
+    if [[ -t 0 ]]; then
+        echo -n "Enter your Avatar Azure region (e.g., eastus): "
+        read AZURE_AVATAR_REGION
+        echo -n "Enter your Avatar Azure Speech API key: "
+        read -s AZURE_AVATAR_KEY
+        echo ""
+    else
+        log "ERROR" "Interactive configuration requires a terminal"
+        exit 1
+    fi
+    
+    if [[ -z "$AZURE_AVATAR_REGION" || -z "$AZURE_AVATAR_KEY" ]]; then
+        log "ERROR" "Avatar region and API key are required"
+        exit 1
+    fi
+    
+    # Test the avatar configuration
+    log "INFO" "Testing avatar configuration..."
+    local test_url="https://${AZURE_AVATAR_REGION}.api.cognitive.microsoft.com/sts/v1.0/issuetoken"
+    local response=$(curl -s -w "%{http_code}" -X POST \
+        -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+        -H "Content-Length: 0" \
+        "$test_url")
+    
+    local http_code="${response: -3}"
+    
+    if [[ "$http_code" == "200" ]]; then
+        # Test if batch avatar API is available
+        local avatar_test_url="https://${AZURE_AVATAR_REGION}.tts.speech.microsoft.com/avatar/batchsyntheses?maxpagesize=1&api-version=2024-08-01"
+        local avatar_response=$(curl -s -w "%{http_code}" \
+            -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+            "$avatar_test_url")
+        
+        local avatar_http_code="${avatar_response: -3}"
+        
+        if [[ "$avatar_http_code" == "200" ]]; then
+            save_avatar_config
+            log "INFO" "✅ Avatar configuration test successful!"
+            log "INFO" "Batch Avatar API is available in this region."
+        else
+            log "WARN" "⚠️ Basic authentication successful, but Batch Avatar API returned HTTP $avatar_http_code"
+            log "WARN" "This might mean:"
+            log "WARN" "  • Avatar features are not enabled in this region"
+            log "WARN" "  • Your subscription tier doesn't include avatar features"
+            log "WARN" "  • Avatar features require special access"
+            echo ""
+            echo -n "Save configuration anyway? (y/n): "
+            read save_anyway
+            if [[ "$save_anyway" =~ ^[Yy]$ ]]; then
+                save_avatar_config
+                log "INFO" "Avatar configuration saved (with warnings)"
+            else
+                log "INFO" "Avatar configuration not saved"
+                return 1
+            fi
+        fi
+    else
+        log "ERROR" "Avatar configuration test failed. HTTP code: $http_code"
+        log "ERROR" "Please check your avatar region and API key"
         exit 1
     fi
 }
@@ -635,6 +795,298 @@ speech_to_text() {
     fi
 }
 
+# Add new function for TTS with Avatar using Batch Avatar API
+text_to_speech_avatar() {
+    local text=""
+    local voice="en-US-AvaMultilingualNeural"
+    local avatar="lisa"
+    local avatar_style="graceful-sitting"
+    local output_file="avatar_$(date '+%Y%m%d_%H%M%S').mp4"
+    local rate="+0%"
+    local pitch="+0%"
+    local video_format="mp4"
+    local video_codec="h264"
+    local subtitle_type="soft_embedded"
+    local background_color="#FFFFFFFF"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                return 0
+                ;;
+            -t|--text)
+                text="$2"
+                shift 2
+                ;;
+            -v|--voice)
+                voice="$2"
+                shift 2
+                ;;
+            -a|--avatar)
+                avatar="$2"
+                shift 2
+                ;;
+            --avatar-style)
+                avatar_style="$2"
+                shift 2
+                ;;
+            -o|--output)
+                output_file="$2"
+                shift 2
+                ;;
+            -r|--rate)
+                rate="$2"
+                shift 2
+                ;;
+            -p|--pitch)
+                pitch="$2"
+                shift 2
+                ;;
+            --background)
+                background_color="$2"
+                shift 2
+                ;;
+            *)
+                if [[ -z "$text" ]]; then
+                    text="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    if [[ -z "$text" ]]; then
+        if [[ -t 0 ]]; then
+            echo ""
+            echo "Choose input method:"
+            echo "1) Type text directly"
+            echo "2) Read from text file"
+            echo -n "Enter choice (1 or 2): "
+            read input_choice
+            
+            case "$input_choice" in
+                "1")
+                    echo -n "Enter text to convert to avatar speech: "
+                    read text
+                    ;;
+                "2")
+                    echo -n "Enter path to text file: "
+                    read text_file
+                    # Remove surrounding quotes if present
+                    text_file=$(echo "$text_file" | sed "s/^['\"]//;s/['\"]$//")
+                    
+                    if [[ -z "$text_file" ]]; then
+                        log "ERROR" "No text file provided"
+                        return 1
+                    fi
+                    
+                    if [[ ! -f "$text_file" ]]; then
+                        log "ERROR" "Text file not found: $text_file"
+                        log "INFO" "Make sure the file path is correct (without quotes)"
+                        log "INFO" "Tip: Use tab completion or drag & drop the file into terminal"
+                        return 1
+                    fi
+                    
+                    # Read text from file
+                    text=$(cat "$text_file")
+                    if [[ $? -ne 0 || -z "$text" ]]; then
+                        log "ERROR" "Failed to read text from file or file is empty"
+                        return 1
+                    fi
+                    
+                    log "INFO" "Text loaded from file: $text_file"
+                    ;;
+                *)
+                    log "ERROR" "Invalid choice. Please enter 1 or 2"
+                    return 1
+                    ;;
+            esac
+        else
+            log "ERROR" "No text provided and not running interactively"
+            return 1
+        fi
+    fi
+    
+    if [[ -z "$text" ]]; then
+        log "ERROR" "No text provided"
+        return 1
+    fi
+    
+    # If no avatar was specified via command line and we're running interactively, prompt for avatar selection
+    if [[ "$avatar" == "lisa" && -t 0 ]]; then
+        echo ""
+        echo "Avatar selection:"
+        avatar=$(select_avatar)
+        log "INFO" "Selected avatar: $avatar"
+    fi
+    
+    # Check avatar configuration first
+    if ! load_avatar_config; then
+        log "ERROR" "Avatar configuration not found"
+        log "INFO" "Run: $0 avatar-config"
+        log "INFO" "You need a separate Azure Speech resource with avatar capabilities"
+        return 1
+    fi
+    
+    # Create output directories
+    mkdir -p "$TTS_DIR"
+    local full_output_path="$TTS_DIR/$output_file"
+    
+    log "INFO" "Converting text to avatar video using Batch Avatar API..."
+    log "INFO" "Text: $text"
+    log "INFO" "Voice: $voice"
+    log "INFO" "Avatar: $avatar ($avatar_style)"
+    log "INFO" "Avatar Region: $AZURE_AVATAR_REGION"
+    log "INFO" "Output: $full_output_path"
+    
+    # Generate unique job ID
+    local job_id="batchavatar-$(date +%s)-$$"
+    
+    # Batch Avatar API endpoint using avatar credentials
+    local avatar_api_url="https://${AZURE_AVATAR_REGION}.tts.speech.microsoft.com/avatar/batchsyntheses/${job_id}?api-version=2024-08-01"
+    
+    # Create SSML with prosody controls
+    local ssml="<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='http://www.w3.org/2001/mstts' xml:lang='en-US'>
+        <voice name='$voice'>
+            <prosody rate='$rate' pitch='$pitch'>
+                $text
+            </prosody>
+        </voice>
+    </speak>"
+    
+    # Create batch avatar request payload
+    local request_payload=$(cat <<EOF
+{
+    "inputKind": "Ssml",
+    "inputs": [
+        {
+            "content": "$ssml"
+        }
+    ],
+    "synthesisConfig": {
+        "voice": "$voice"
+    },
+    "avatarConfig": {
+        "talkingAvatarCharacter": "$avatar",
+        "talkingAvatarStyle": "$avatar_style",
+        "videoFormat": "$video_format",
+        "videoCodec": "$video_codec",
+        "subtitleType": "$subtitle_type",
+        "backgroundColor": "$background_color",
+        "customized": false
+    }
+}
+EOF
+    )
+    
+    log "INFO" "Submitting batch avatar job: $job_id"
+    
+    # Submit batch avatar job
+    local submit_response=$(curl -s -w "\n%{http_code}" -X PUT \
+        -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+        -H "Content-Type: application/json" \
+        --data "$request_payload" \
+        "$avatar_api_url")
+    
+    local submit_body=$(echo "$submit_response" | sed '$d')
+    local submit_http_code=$(echo "$submit_response" | tail -1)
+    
+    if [[ "$submit_http_code" != "201" ]]; then
+        log "ERROR" "Failed to submit batch avatar job. HTTP code: $submit_http_code"
+        log "ERROR" "Response: $submit_body"
+        return 1
+    fi
+    
+    log "INFO" "Batch avatar job submitted successfully. Polling for completion..."
+    
+    # Poll for job completion
+    local max_attempts=60  # 5 minutes with 5-second intervals
+    local attempt=0
+    local job_status=""
+    
+    while [[ $attempt -lt $max_attempts ]]; do
+        sleep 5
+        attempt=$((attempt + 1))
+        
+        # Get job status
+        local status_response=$(curl -s -w "\n%{http_code}" \
+            -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+            "$avatar_api_url")
+        
+        local status_body=$(echo "$status_response" | sed '$d')
+        local status_http_code=$(echo "$status_response" | tail -1)
+        
+        if [[ "$status_http_code" == "200" ]]; then
+            job_status=$(echo "$status_body" | jq -r '.status // "Unknown"')
+            
+            case "$job_status" in
+                "Succeeded")
+                    log "INFO" "Batch avatar job completed successfully!"
+                    
+                    # Get download URL
+                    local download_url=$(echo "$status_body" | jq -r '.outputs.result // empty')
+                    
+                    if [[ -n "$download_url" && "$download_url" != "null" ]]; then
+                        log "INFO" "Downloading avatar video..."
+                        
+                        # Download the video file
+                        local download_response=$(curl -s -w "\n%{http_code}" -o "$full_output_path" "$download_url")
+                        local download_http_code=$(echo "$download_response" | tail -1)
+                        
+                        if [[ "$download_http_code" == "200" ]]; then
+                            # Check if file was actually downloaded and has content
+                            if [[ -f "$full_output_path" && -s "$full_output_path" ]]; then
+                                log "INFO" "✅ Avatar video successfully saved to: $full_output_path"
+                                
+                                # Get file size for confirmation
+                                local file_size=$(ls -lh "$full_output_path" | awk '{print $5}')
+                                log "INFO" "Video file size: $file_size"
+                                
+                                # Cleanup job (optional)
+                                curl -s -X DELETE \
+                                    -H "Ocp-Apim-Subscription-Key: $AZURE_AVATAR_KEY" \
+                                    "$avatar_api_url" > /dev/null
+                                
+                                return 0
+                            else
+                                log "ERROR" "Downloaded file is empty or missing"
+                                rm -f "$full_output_path"
+                                return 1
+                            fi
+                        else
+                            log "ERROR" "Failed to download video file. HTTP code: $download_http_code"
+                            return 1
+                        fi
+                    else
+                        log "ERROR" "No download URL found in job results"
+                        return 1
+                    fi
+                    ;;
+                "Failed")
+                    log "ERROR" "Batch avatar job failed"
+                    log "ERROR" "Job details: $status_body"
+                    return 1
+                    ;;
+                "Running"|"Queued")
+                    log "INFO" "Job status: $job_status (attempt $attempt/$max_attempts)"
+                    ;;
+                *)
+                    log "INFO" "Job status: $job_status (attempt $attempt/$max_attempts)"
+                    ;;
+            esac
+        else
+            log "ERROR" "Failed to get job status. HTTP code: $status_http_code"
+            return 1
+        fi
+    done
+    
+    log "ERROR" "Timeout waiting for batch avatar job completion after $max_attempts attempts"
+    log "INFO" "You can check job status manually with job ID: $job_id"
+    return 1
+}
+
 # List available voices
 list_voices() {
     log "INFO" "Fetching available voices..."
@@ -658,15 +1110,26 @@ show_debug() {
     echo -e "${BLUE}Azure Speech API Debug Information${NC}"
     echo ""
     
-    # Check configuration
+    # Check standard configuration
     if load_config; then
-        echo -e "${GREEN}✅ Configuration loaded successfully${NC}"
+        echo -e "${GREEN}✅ Standard Configuration loaded successfully${NC}"
         echo "Region: $AZURE_REGION"
         echo "API Key: ${AZURE_SPEECH_KEY:0:8}...${AZURE_SPEECH_KEY: -8}"
     else
-        echo -e "${RED}❌ Configuration not found${NC}"
+        echo -e "${RED}❌ Standard Configuration not found${NC}"
         echo "Run: $0 config"
         return 1
+    fi
+    
+    # Check avatar configuration
+    echo ""
+    if load_avatar_config; then
+        echo -e "${GREEN}✅ Avatar Configuration loaded successfully${NC}"
+        echo "Avatar Region: $AZURE_AVATAR_REGION"
+        echo "Avatar API Key: ${AZURE_AVATAR_KEY:0:8}...${AZURE_AVATAR_KEY: -8}"
+    else
+        echo -e "${YELLOW}⚠️ Avatar Configuration not found${NC}"
+        echo "Avatar features not configured. Run: $0 avatar-config"
     fi
     
     echo ""
@@ -789,6 +1252,9 @@ main() {
         "config")
             setup_config
             ;;
+        "avatar-config")
+            setup_avatar_config
+            ;;
         "debug")
             show_debug
             ;;
@@ -798,6 +1264,13 @@ main() {
                 exit 1
             fi
             text_to_speech "$@"
+            ;;
+        "ttsa")
+            if ! load_config; then
+                log "ERROR" "Azure configuration not found. Run: $0 config"
+                exit 1
+            fi
+            text_to_speech_avatar "$@"
             ;;
         "stt")
             if ! load_config; then
