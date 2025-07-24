@@ -1,7 +1,7 @@
 #!/bin/bash
-# Install Python dependencies for avatar functionality
+# Install Python dependencies for avatar functionality (Batch API)
 
-echo "📦 Installing Python dependencies for Azure TTS Avatar..."
+echo "📦 Installing Python dependencies for Azure TTS Avatar (Batch API)..."
 
 # Check if Python3 is available
 if ! command -v python3 &> /dev/null; then
@@ -19,13 +19,20 @@ fi
 echo "⚡ Activating virtual environment..."
 source .venv/bin/activate
 
-# Install required packages
-echo "📥 Installing packages..."
+# Install required packages for batch synthesis
+echo "📥 Installing packages for batch avatar synthesis..."
 pip install --upgrade pip
-pip install aiortc aiohttp opencv-python websockets
+pip install requests urllib3
 
-echo "✅ Avatar dependencies installed successfully!"
+echo "✅ Avatar batch dependencies installed successfully!"
+echo ""
+echo "Dependencies installed:"
+echo "  • requests (HTTP client for Azure batch API)"
+echo "  • urllib3 (URL parsing utilities)"
 echo ""
 echo "To use avatar functionality:"
 echo "1. Ensure your Azure avatar credentials are configured"
 echo "2. Run: ./azure_speech_v1.sh ttsa \"Your text here\""
+echo ""
+echo "Note: This uses the Azure Batch Avatar API, which is more reliable"
+echo "      than real-time WebRTC and doesn't require special permissions."

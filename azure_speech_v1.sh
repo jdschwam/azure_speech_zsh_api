@@ -80,15 +80,18 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0 config"
-    echo "  $0 tts -t \"Hello, world!\" -v \"en-US-AriaNeural\" -o hello.wav"
-    echo "  $0 tts \"Quick text without options\""
+    echo '  $0 tts -t "Hello, world!" -v "en-US-AriaNeural" -o hello.wav'
+    echo '  $0 tts "Quick text without options"'
     echo "  $0 tts  # Will prompt to type text or select a text file"
-    echo "  $0 ttsa -t \"Hello from avatar!\" -a \"lisa\" -v \"en-US-JennyNeural\""
-    echo "  $0 ttsa \"Quick avatar test\"  # Will prompt for avatar selection"
+    echo '  $0 ttsa -t "Hello from avatar" -a "lisa" -v "en-US-JennyNeural"'
+    echo '  $0 ttsa "Quick avatar test"  # Will prompt for avatar selection'
     echo "  $0 ttsa  # Will prompt to type text or select a text file, then avatar"
     echo "  $0 stt -f audio.wav -l en-US"
     echo "  $0 stt  # Will prompt for audio file"
     echo "  $0 voices"
+    echo ""
+    echo "Note: If using exclamation marks in text, escape them with backslash: \\!"
+    echo "      Or use single quotes: './script.sh ttsa 'Hello world!'"
     echo ""
     echo "File Organization:"
     echo "  TTS outputs:    $TTS_DIR/"
@@ -104,8 +107,9 @@ select_avatar() {
     echo "3. Davis (Professional male)" >&2
     echo "4. Grace (Friendly female)" >&2
     echo "5. Custom (if you have custom avatar)" >&2
+    echo "6. Exit (cancel avatar synthesis)" >&2
     
-    echo -n "Select avatar (1-5): " >&2
+    echo -n "Select avatar (1-6): " >&2
     read choice
     case $choice in
         1) echo "lisa" ;;
@@ -113,6 +117,7 @@ select_avatar() {
         3) echo "davis" ;;
         4) echo "grace" ;;
         5) echo -n "Enter custom avatar ID: " >&2; read custom; echo "$custom" ;;
+        6) echo "EXIT" ;;
         *) echo "lisa" ;;  # Default
     esac
 }
@@ -800,6 +805,7 @@ text_to_speech_avatar() {
     local text=""
     local voice="en-US-JennyNeural"
     local avatar="lisa"
+    local avatar_specified=false
     local output_file="avatar_$(date '+%Y%m%d_%H%M%S').mp4"
     local rate="+0%"
     local pitch="+0%"
@@ -821,6 +827,7 @@ text_to_speech_avatar() {
                 ;;
             -a|--avatar)
                 avatar="$2"
+                avatar_specified=true
                 shift 2
                 ;;
             --avatar-style)
@@ -910,10 +917,14 @@ text_to_speech_avatar() {
     fi
     
     # If no avatar was specified via command line and we're running interactively, prompt for avatar selection
-    if [[ "$avatar" == "lisa" && -t 0 ]]; then
+    if [[ "$avatar_specified" == false && -t 0 ]]; then
         echo ""
         echo "Avatar selection:"
         avatar=$(select_avatar)
+        if [[ "$avatar" == "EXIT" ]]; then
+            log "INFO" "Avatar synthesis cancelled by user"
+            return 0
+        fi
         log "INFO" "Selected avatar: $avatar"
     fi
     
@@ -926,11 +937,11 @@ text_to_speech_avatar() {
     
     # Check if Python avatar script exists
     local script_dir="$(dirname "${BASH_SOURCE[0]}")"
-    local avatar_script="$script_dir/avatar_webrtc.py"
+    local avatar_script="$script_dir/avatar_batch.py"
     
     if [[ ! -f "$avatar_script" ]]; then
-        log "ERROR" "Avatar WebRTC script not found: $avatar_script"
-        log "INFO" "Please create the avatar_webrtc.py file"
+        log "ERROR" "Avatar batch script not found: $avatar_script"
+        log "INFO" "Please create the avatar_batch.py file"
         return 1
     fi
     
@@ -944,13 +955,13 @@ text_to_speech_avatar() {
     
     # Check Python dependencies
     local python_exec="$venv_dir/bin/python"
-    if ! "$python_exec" -c "import aiortc, aiohttp, cv2, websockets" 2>/dev/null; then
+    if ! "$python_exec" -c "import requests" 2>/dev/null; then
         log "ERROR" "Missing Python dependencies"
         log "INFO" "Run '$script_dir/install_avatar_deps.sh' to install dependencies"
         return 1
     fi
     
-    log "INFO" "Starting avatar synthesis with WebRTC..."
+    log "INFO" "Starting avatar synthesis with batch API..."
     log "INFO" "Text: $text"
     log "INFO" "Voice: $voice"
     log "INFO" "Avatar: $avatar"
@@ -994,7 +1005,7 @@ text_to_speech_avatar() {
         return 1
     fi
 }
-}
+
 
 # List available voices
 list_voices() {

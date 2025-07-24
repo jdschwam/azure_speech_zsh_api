@@ -49,33 +49,70 @@ class AzureAvatarTTS:
             sys.exit(1)
 
     async def get_ice_servers(self):
-        """Step 1a: Get ICE servers from Azure"""
+        """Step 1a: Get ICE servers from Azure TTS Avatar API"""
+        # Use the correct avatar relay token endpoint
         url = f"https://{self.avatar_region}.tts.speech.microsoft.com/cognitiveservices/avatar/relay/token/v1"
         headers = {
-            'Ocp-Apim-Subscription-Key': self.avatar_key,
-            'Content-Type': 'application/json'
+            'Ocp-Apim-Subscription-Key': self.avatar_key
         }
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers) as response:
+                async with session.get(url, headers=headers) as response:
                     if response.status == 200:
                         data = await response.json()
-                        self.ice_servers = [
-                            RTCIceServer(
-                                urls=data['Urls'],
-                                username=data['Username'],
-                                credential=data['Password']
-                            )
-                        ]
-                        logger.info(f"✅ ICE servers retrieved: {len(data['Urls'])} servers")
-                        return True
+                        # Azure returns ICE server configuration
+                        if 'urls' in data and 'username' in data and 'credential' in data:
+                            self.ice_servers = [
+                                RTCIceServer(
+                                    urls=data['urls'],
+                                    username=data['username'],
+                                    credential=data['credential']
+                                )
+                            ]
+                            logger.info(f"✅ ICE servers retrieved: {len(data['urls'])} servers")
+                            return True
+                        else:
+                            # Try alternative response format
+                            urls = data.get('Urls', data.get('iceServers', []))
+                            username = data.get('Username', data.get('username', ''))
+                            password = data.get('Password', data.get('credential', ''))
+                            
+                            if urls:
+                                self.ice_servers = [
+                                    RTCIceServer(
+                                        urls=urls,
+                                        username=username,
+                                        credential=password
+                                    )
+                                ]
+                                logger.info(f"✅ ICE servers retrieved: {len(urls)} servers")
+                                return True
+                            else:
+                                logger.error(f"❌ Unexpected response format: {data}")
+                                return False
                     else:
                         logger.error(f"❌ Failed to get ICE servers: {response.status}")
-                        return False
+                        error_text = await response.text()
+                        logger.error(f"❌ Response: {error_text}")
+                        
+                        # If the relay endpoint fails, try using standard STUN servers as fallback
+                        logger.info("🔄 Falling back to standard STUN servers...")
+                        self.ice_servers = [
+                            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+                            RTCIceServer(urls=["stun:stun1.l.google.com:19302"])
+                        ]
+                        logger.info("✅ Using fallback STUN servers")
+                        return True
         except Exception as e:
             logger.error(f"❌ Error getting ICE servers: {e}")
-            return False
+            logger.info("🔄 Falling back to standard STUN servers...")
+            self.ice_servers = [
+                RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun1.l.google.com:19302"])
+            ]
+            logger.info("✅ Using fallback STUN servers")
+            return True
 
     async def setup_peer_connection(self):
         """Step 2: Create RTCPeerConnection with ICE servers"""
@@ -119,11 +156,13 @@ class AzureAvatarTTS:
 
     async def connect_websocket_and_synthesize(self, text, voice, avatar):
         """Steps 3, 4, 5: Connect WebSocket, send config, and stream"""
-        ws_url = f"wss://{self.avatar_region}.tts.speech.microsoft.com/cognitiveservices/websocket/v1?enableTalkingAvatar=true"
+        # Use the correct Azure TTS Avatar WebSocket endpoint
+        ws_url = f"wss://{self.avatar_region}.tts.speech.microsoft.com/cognitiveservices/websocket/v1"
         
         headers = {
             'Ocp-Apim-Subscription-Key': self.avatar_key,
-            'X-ConnectionId': f'avatar-{int(time.time())}'
+            'X-ConnectionId': f'avatar-{int(time.time())}',
+            'Content-Type': 'application/json'
         }
         
         try:
@@ -135,33 +174,44 @@ class AzureAvatarTTS:
                 offer = await self.pc.createOffer()
                 await self.pc.setLocalDescription(offer)
                 
-                # Send avatar configuration
-                avatar_config = {
-                    "type": "avatar_config",
-                    "avatar": {
-                        "character": avatar,
-                        "style": "graceful-sitting",
-                        "background": {
-                            "color": "#FFFFFFFF"
+                # Send avatar configuration message - using correct Azure format
+                config_message = {
+                    "context": {
+                        "synthesis": {
+                            "audio": {
+                                "metadataOptions": {
+                                    "sentenceBoundaryEnabled": False,
+                                    "wordBoundaryEnabled": False
+                                },
+                                "outputFormat": "audio-24khz-48kbitrate-mono-mp3"
+                            },
+                            "avatar": {
+                                "character": avatar,
+                                "style": "graceful-sitting",
+                                "background": {
+                                    "color": "#FFFFFFFF"
+                                }
+                            }
                         }
-                    },
-                    "tts": {
-                        "voice": voice,
-                        "outputFormat": "audio-24khz-48kbitrate-mono-mp3"
-                    },
-                    "webrtc": {
-                        "sdp": offer.sdp,
-                        "type": offer.type
                     }
                 }
                 
-                await websocket.send(json.dumps(avatar_config))
+                await websocket.send(json.dumps(config_message))
                 logger.info("⚙️ Avatar configuration sent")
                 
-                # Send SSML text for synthesis
+                # Send SDP offer for WebRTC
+                sdp_message = {
+                    "type": "offer",
+                    "sdp": offer.sdp
+                }
+                
+                await websocket.send(json.dumps(sdp_message))
+                logger.info("📡 SDP offer sent")
+                
+                # Send SSML for synthesis
                 ssml_message = {
-                    "type": "speak",
-                    "ssml": f"""
+                    "type": "ssml",
+                    "text": f"""
                     <speak version="1.0" xml:lang="en-US">
                         <voice name="{voice}">
                             {text}
@@ -171,43 +221,75 @@ class AzureAvatarTTS:
                 }
                 
                 await websocket.send(json.dumps(ssml_message))
-                logger.info(f"🗣️ Text sent for synthesis: {text}")
+                logger.info(f"🗣️ SSML sent for synthesis: {text}")
                 
                 # Handle incoming messages
-                timeout = 30  # seconds
+                timeout = 60  # Increased timeout for avatar synthesis
                 start_time = time.time()
+                synthesis_started = False
                 
                 while time.time() - start_time < timeout:
                     try:
-                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                        data = json.loads(message)
+                        message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
                         
-                        if data.get('type') == 'sdp':
-                            # Received remote SDP from Azure
+                        # Handle binary data (audio/video)
+                        if isinstance(message, bytes):
+                            logger.info(f"📦 Received binary data: {len(message)} bytes")
+                            continue
+                        
+                        # Handle JSON messages
+                        try:
+                            data = json.loads(message)
+                        except json.JSONDecodeError:
+                            logger.debug(f"📄 Received non-JSON message: {message[:100]}...")
+                            continue
+                        
+                        message_type = data.get('type', '')
+                        
+                        if message_type == 'answer':
+                            # Received remote SDP answer from Azure
                             remote_sdp = RTCSessionDescription(
                                 sdp=data['sdp'], 
-                                type=data['type']
+                                type='answer'
                             )
                             await self.pc.setRemoteDescription(remote_sdp)
-                            logger.info("📡 Remote SDP received and set")
+                            logger.info("📡 Remote SDP answer received and set")
                         
-                        elif data.get('type') == 'ice-candidate':
+                        elif message_type == 'ice-candidate':
                             # Handle ICE candidates
-                            await self.pc.addIceCandidate(data['candidate'])
-                            logger.info("🧊 ICE candidate added")
+                            if 'candidate' in data:
+                                await self.pc.addIceCandidate(data['candidate'])
+                                logger.info("🧊 ICE candidate added")
                         
-                        elif data.get('type') == 'synthesis_complete':
+                        elif message_type == 'synthesis.started':
+                            logger.info("🎬 Avatar synthesis started")
+                            synthesis_started = True
+                        
+                        elif message_type == 'synthesis.completed':
                             logger.info("✅ Avatar synthesis completed")
                             break
+                        
+                        elif message_type == 'error':
+                            logger.error(f"❌ Avatar API error: {data}")
+                            return False
+                        
+                        else:
+                            logger.debug(f"📝 Received message type: {message_type}")
                             
                     except asyncio.TimeoutError:
+                        if synthesis_started:
+                            logger.info("⏳ Waiting for synthesis to complete...")
                         continue
                     except Exception as e:
                         logger.error(f"❌ Error handling WebSocket message: {e}")
                         break
                 
+                if not synthesis_started:
+                    logger.warning("⚠️ Synthesis may not have started properly")
+                
                 # Wait a bit more for video to finish
-                await asyncio.sleep(5)
+                logger.info("⏳ Waiting for final video data...")
+                await asyncio.sleep(3)
                 
         except Exception as e:
             logger.error(f"❌ WebSocket connection error: {e}")
